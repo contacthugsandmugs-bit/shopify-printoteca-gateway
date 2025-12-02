@@ -135,7 +135,7 @@ async function sendOrderToPrintoteca(shopifyOrder) {
     timeout: 15000
   });
 
-  return response;
+  return response.data;
 }
 
 module.exports = { sendOrderToPrintoteca, listRecentPrintotecaOrders };
