@@ -3,7 +3,158 @@ const crypto = require('crypto');
 
 const PRINTOTECA_API_BASE = 'https://printoteca.ro';
 
-// ---- Helpers to extract Teeinblue design URLs from line item properties ----
+// ---------------------------
+// Basic auth + signing helpers
+// ---------------------------
+
+function getAuthConfig() {
+  const appId = process.env.PRINTOTECA_APP_ID;
+  const secretKey = process.env.PRINTOTECA_SECRET_KEY;
+
+  if (!appId || !secretKey) {
+    throw new Error('PRINTOTECA_APP_ID or PRINTOTECA_SECRET_KEY not configured');
+  }
+
+  return { appId, secretKey };
+}
+
+function sha1Hex(str) {
+  return crypto.createHash('sha1').update(str, 'utf8').digest('hex');
+}
+
+// GET: body = query string *without* Signature
+function buildSignedGetUrl(path, params = {}) {
+  const { appId, secretKey } = getAuthConfig();
+
+  const qs = new URLSearchParams();
+  qs.append('AppId', appId);
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === '') continue;
+    qs.append(key, String(value));
+  }
+
+  const qsWithoutSignature = qs.toString();
+  const signature = sha1Hex(qsWithoutSignature + secretKey);
+  const fullQuery = `${qsWithoutSignature}&Signature=${signature}`;
+
+  return `${PRINTOTECA_API_BASE}${path}?${fullQuery}`;
+}
+
+// POST: body = JSON, signature = sha1(body + secretKey)
+function buildSignedPostRequest(path, body) {
+  const { appId, secretKey } = getAuthConfig();
+  const bodyString = JSON.stringify(body);
+  const signature = sha1Hex(bodyString + secretKey);
+
+  const qs = new URLSearchParams();
+  qs.append('AppId', appId);
+  qs.append('Signature', signature);
+
+  const url = `${PRINTOTECA_API_BASE}${path}?${qs.toString()}`;
+
+  return { url, bodyString };
+}
+
+// ---------------------------
+// Low-level Printoteca client
+// (full API functionality)
+// ---------------------------
+
+async function createPrintotecaOrder(orderBody) {
+  const { url, bodyString } = buildSignedPostRequest('/api/orders.php', orderBody);
+
+  const res = await axios.post(url, bodyString, {
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    timeout: 20000
+  });
+
+  return res.data;
+}
+
+async function listPrintotecaOrders(params = {}) {
+  const finalParams = { ...params };
+
+  if (!finalParams.format) finalParams.format = 'json';
+  if (!finalParams.limit) finalParams.limit = 250;
+
+  const url = buildSignedGetUrl('/api/orders.php', finalParams);
+
+  const res = await axios.get(url, {
+    headers: { Accept: 'application/json' },
+    timeout: 20000
+  });
+
+  const data = res.data;
+
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.orders)) return data.orders;
+  if (Array.isArray(data.data)) return data.data;
+
+  console.warn('Printoteca listPrintotecaOrders: unexpected response format');
+  return [];
+}
+
+async function listRecentPrintotecaOrders(daysBack = 14) {
+  const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+  return listPrintotecaOrders({ created_at_min: since });
+}
+
+async function getPrintotecaOrderById(id) {
+  const url = buildSignedGetUrl('/api/order.php', {
+    id,
+    format: 'json'
+  });
+
+  const res = await axios.get(url, {
+    headers: { Accept: 'application/json' },
+    timeout: 15000
+  });
+
+  return res.data;
+}
+
+// Mirrors GET /api/orders/count.php
+async function countPrintotecaOrders(params = {}) {
+  const url = buildSignedGetUrl('/api/orders/count.php', params);
+
+  const res = await axios.get(url, {
+    timeout: 15000
+  });
+
+  return res.data;
+}
+
+// Docs show DELETE /api/orders.php but example uses GET with id param.
+// We follow docs example and call GET with id=...
+async function deletePrintotecaOrderById(id) {
+  const url = buildSignedGetUrl('/api/orders.php', { id });
+
+  const res = await axios.get(url, {
+    timeout: 15000
+  });
+
+  return res.data;
+}
+
+async function findPrintotecaOrderByExternalId(externalId, daysBack = 30) {
+  const orders = await listRecentPrintotecaOrders(daysBack);
+  return (
+    orders.find(
+      (o) =>
+        o.external_id === externalId ||
+        o.externalId === externalId // defensive
+    ) || null
+  );
+}
+
+// ---------------------------
+// Teeinblue helpers
+// ---------------------------
+
 function extractTeeinblueDesigns(lineItem) {
   const designs = {};
   if (!Array.isArray(lineItem.properties)) return designs;
@@ -20,9 +171,13 @@ function extractTeeinblueDesigns(lineItem) {
   return designs;
 }
 
-// ---- Map Shopify order → Printoteca fields ----
+// ---------------------------
+// Mapping Shopify → Printoteca
+// ---------------------------
+
 function mapShippingAddress(shopifyOrder) {
   const addr = shopifyOrder.shipping_address || {};
+
   return {
     firstName: addr.first_name || '',
     lastName: addr.last_name || '',
@@ -43,25 +198,29 @@ function mapShippingMethod(shopifyOrder) {
   if (!shippingLines.length) return defaultMethod;
 
   const title = (shippingLines[0].title || '').toLowerCase();
+
   if (title.includes('courier') || title.includes('express')) return 'courier';
-  if (title.includes('recorded') || title.includes('signed')) return 'recorded';
+  if (title.includes('recorded') || title.includes('tracked') || title.includes('signed')) {
+    return 'recorded';
+  }
+
   return 'regular';
 }
 
 function mapLineItemsToPrintotecaItems(shopifyOrder) {
   const items = [];
+  const lineItems = shopifyOrder.line_items || [];
 
-  for (const li of shopifyOrder.line_items) {
-    // basic routing: all SKUs go to Printoteca, and SKU == Printoteca pn
+  for (const li of lineItems) {
     const pn = li.sku;
     if (!pn) {
-      console.warn('Line item without SKU, skipping', li.id);
+      console.warn('Printoteca: line item without SKU, skipping', li.id);
       continue;
     }
 
     const designs = extractTeeinblueDesigns(li);
 
-    const printotecaItem = {
+    const item = {
       pn,
       quantity: li.quantity,
       retailPrice: Number(li.price),
@@ -69,54 +228,30 @@ function mapLineItemsToPrintotecaItems(shopifyOrder) {
       designs: {}
     };
 
-    if (designs.front) printotecaItem.designs.front = designs.front;
-    if (designs.back) printotecaItem.designs.back = designs.back;
+    if (designs.front) item.designs.front = designs.front;
+    if (designs.back) item.designs.back = designs.back;
 
-    items.push(printotecaItem);
+    items.push(item);
   }
 
   return items;
 }
 
-// ---- Signature helpers (Printoteca / Inkthreadable-style) ----
-function signPostBody(bodyString, secretKey) {
-  return crypto
-    .createHash('sha1')
-    .update(bodyString + secretKey)
-    .digest('hex');
-}
-
-function signGetQuery(queryStringWithoutSignature, secretKey) {
-  return crypto
-    .createHash('sha1')
-    .update(queryStringWithoutSignature + secretKey)
-    .digest('hex');
-}
-
-// ---- Create order in Printoteca ----
-async function sendOrderToPrintoteca(shopifyOrder) {
-  const appId = process.env.PRINTOTECA_APP_ID;
-  const secretKey = process.env.PRINTOTECA_SECRET_KEY;
-  const brandName = process.env.PRINTOTECA_BRAND_NAME || '';
-
-  if (!appId || !secretKey) {
-    throw new Error('Printoteca AppId/SecretKey not configured');
-  }
-
+function mapShopifyOrderToPrintotecaOrder(shopifyOrder) {
   const shipping_address = mapShippingAddress(shopifyOrder);
   const shippingMethod = mapShippingMethod(shopifyOrder);
   const items = mapLineItemsToPrintotecaItems(shopifyOrder);
 
   if (!items.length) {
-    throw new Error('No items mapped to Printoteca for order ' + shopifyOrder.id);
+    throw new Error(`Printoteca: no items mapped from Shopify order ${shopifyOrder.id}`);
   }
 
-  // external_id used later to map back to Shopify order
-  const externalId = `shopify:${shopifyOrder.id}`;
+  const brandName = process.env.PRINTOTECA_BRAND_NAME || '';
+  const external_id = `shopify:${shopifyOrder.id}`;
 
-  const body = {
-    external_id: externalId,
-    brandName: brandName,
+  return {
+    external_id,
+    brandName,
     comment: `Shopify order ${shopifyOrder.name || shopifyOrder.id}`,
     shipping_address,
     shipping: {
@@ -124,66 +259,28 @@ async function sendOrderToPrintoteca(shopifyOrder) {
     },
     items
   };
-
-  const bodyString = JSON.stringify(body);
-  const signature = signPostBody(bodyString, secretKey);
-
-  const url = `${PRINTOTECA_API_BASE}/api/orders.php?AppId=${encodeURIComponent(
-    appId
-  )}&Signature=${signature}`;
-
-  console.log('Sending order to Printoteca', { url, externalId });
-
-  const response = await axios.post(url, body, {
-    headers: { 'Content-Type': 'application/json' },
-    timeout: 15000
-  });
-
-  return response;
 }
 
-// ---- List recent Printoteca orders for tracking sync ----
-async function listRecentPrintotecaOrders(daysBack = 14) {
-  const appId = process.env.PRINTOTECA_APP_ID;
-  const secretKey = process.env.PRINTOTECA_SECRET_KEY;
-  if (!appId || !secretKey) {
-    throw new Error('Printoteca AppId/SecretKey not configured');
-  }
-
-  const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-
-  const params = new URLSearchParams();
-  params.append('AppId', appId);
-  params.append('format', 'json');
-  params.append('created_at_min', since);
-  params.append('limit', '250');
-
-  const bodyString = params.toString(); // everything before Signature
-  const signature = signGetQuery(bodyString, secretKey);
-  params.append('Signature', signature);
-
-  const url = `${PRINTOTECA_API_BASE}/api/orders.php?${params.toString()}`;
-
-  const res = await axios.get(url, {
-    headers: { Accept: 'application/json' },
-    timeout: 15000
-  });
-
-  const data = res.data;
-
-  let orders;
-  if (Array.isArray(data)) orders = data;
-  else if (Array.isArray(data.orders)) orders = data.orders;
-  else if (Array.isArray(data.data)) orders = data.data;
-  else {
-    console.error('Unexpected Printoteca orders response format');
-    return [];
-  }
-
-  return orders;
+async function createPrintotecaOrderFromShopifyOrder(shopifyOrder) {
+  const body = mapShopifyOrderToPrintotecaOrder(shopifyOrder);
+  const data = await createPrintotecaOrder(body);
+  return data;
 }
+
+// ---------------------------
+// Exports
+// ---------------------------
 
 module.exports = {
-  sendOrderToPrintoteca,
-  listRecentPrintotecaOrders
+  // low-level API
+  createPrintotecaOrder,
+  listPrintotecaOrders,
+  listRecentPrintotecaOrders,
+  getPrintotecaOrderById,
+  deletePrintotecaOrderById,
+  countPrintotecaOrders,
+  findPrintotecaOrderByExternalId,
+  // mapping helpers
+  mapShopifyOrderToPrintotecaOrder,
+  createPrintotecaOrderFromShopifyOrder
 };
