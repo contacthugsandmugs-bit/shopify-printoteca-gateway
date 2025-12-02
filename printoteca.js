@@ -5,7 +5,6 @@ const crypto = require('crypto');
 const PRINTOTECA_API_BASE = 'https://printoteca.ro';
 
 // ---- Helper: clean Teeinblue URLs ----
-// Printoteca may not like query params like ?printarea=30x40
 function cleanTeeinblueUrl(url) {
   if (typeof url !== 'string') return url;
   const withoutQuery = url.split('?')[0];
@@ -59,14 +58,24 @@ function mapShippingMethod(shopifyOrder) {
   return 'regular';
 }
 
+/**
+ * Only include line items where Vendor == "Printoteca"
+ * (case-insensitive). Teeinblue is overwriting the Vendor field.
+ */
 function mapLineItemsToPrintotecaItems(shopifyOrder) {
   const items = [];
+  const lineItems = shopifyOrder.line_items || [];
+  if (!lineItems.length) return items;
 
-  for (const li of shopifyOrder.line_items) {
-    // basic routing: all SKUs go to Printoteca, and SKU == Printoteca pn
+  for (const li of lineItems) {
+    const vendor = (li.vendor || '').toLowerCase();
+    if (vendor !== 'printoteca') {
+      continue; // not for Printoteca
+    }
+
     const pn = li.sku;
     if (!pn) {
-      console.warn('Line item without SKU, skipping', li.id);
+      console.warn('Printoteca item without SKU, skipping', li.id);
       continue;
     }
 
@@ -86,6 +95,7 @@ function mapLineItemsToPrintotecaItems(shopifyOrder) {
     console.log('Mapped line item to Printoteca item:', {
       sku: pn,
       quantity: li.quantity,
+      vendor: li.vendor,
       designs
     });
 
@@ -95,7 +105,7 @@ function mapLineItemsToPrintotecaItems(shopifyOrder) {
   return items;
 }
 
-// ---- Signature helpers (Printoteca / Inkthreadable-style) ----
+// ---- Signature helpers ----
 function signPostBody(bodyString, secretKey) {
   return crypto
     .createHash('sha1')
@@ -125,10 +135,12 @@ async function sendOrderToPrintoteca(shopifyOrder) {
   const items = mapLineItemsToPrintotecaItems(shopifyOrder);
 
   if (!items.length) {
-    throw new Error('No items mapped to Printoteca for order ' + shopifyOrder.id);
+    console.log(
+      `Order ${shopifyOrder.id} has no products with Vendor=Printoteca; skipping Printoteca.`
+    );
+    return { status: 'skipped' };
   }
 
-  // external_id used later to map back to Shopify order
   const externalId = `shopify:${shopifyOrder.id}`;
 
   const body = {
@@ -175,7 +187,7 @@ async function listRecentPrintotecaOrders(daysBack = 14) {
   params.append('created_at_min', since);
   params.append('limit', '250');
 
-  const bodyString = params.toString(); // everything before Signature
+  const bodyString = params.toString();
   const signature = signGetQuery(bodyString, secretKey);
   params.append('Signature', signature);
 
