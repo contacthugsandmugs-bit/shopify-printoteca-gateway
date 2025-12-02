@@ -1,16 +1,7 @@
-// printoteca.js
 const axios = require('axios');
 const crypto = require('crypto');
 
 const PRINTOTECA_API_BASE = 'https://printoteca.ro';
-
-// ---- Helper: clean Teeinblue URLs ----
-// Printoteca may not like query params like ?printarea=30x40
-function cleanTeeinblueUrl(url) {
-  if (typeof url !== 'string') return url;
-  const withoutQuery = url.split('?')[0];
-  return withoutQuery;
-}
 
 // ---- Helpers to extract Teeinblue design URLs from line item properties ----
 function extractTeeinblueDesigns(lineItem) {
@@ -20,11 +11,9 @@ function extractTeeinblueDesigns(lineItem) {
   for (const prop of lineItem.properties) {
     if (!prop || !prop.name) continue;
     if (prop.name.startsWith('_tib_design_link')) {
-      const raw = prop.value;
-      const cleaned = cleanTeeinblueUrl(raw);
-
-      if (!designs.front) designs.front = cleaned;
-      else if (!designs.back) designs.back = cleaned;
+      // First link -> front, second -> back
+      if (!designs.front) designs.front = prop.value;
+      else if (!designs.back) designs.back = prop.value;
     }
   }
 
@@ -82,12 +71,6 @@ function mapLineItemsToPrintotecaItems(shopifyOrder) {
 
     if (designs.front) printotecaItem.designs.front = designs.front;
     if (designs.back) printotecaItem.designs.back = designs.back;
-
-    console.log('Mapped line item to Printoteca item:', {
-      sku: pn,
-      quantity: li.quantity,
-      designs
-    });
 
     items.push(printotecaItem);
   }
