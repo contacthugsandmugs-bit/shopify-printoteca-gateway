@@ -113,6 +113,40 @@ async function sendOrderToPrintoteca(shopifyOrder) {
   return response.data;
 }
 
+// New Mapping Functions
+
+// Maps the Shopify order's shipping address to Printoteca format
+function mapShippingAddress(shopifyOrder) {
+  const address = shopifyOrder.shipping_address;
+  return {
+    name: address.name,
+    address1: address.address1,
+    address2: address.address2,
+    city: address.city,
+    province: address.province,
+    country: address.country,
+    zip: address.zip,
+    phone: address.phone,
+    email: address.email
+  };
+}
+
+// Maps the Shopify order's shipping method to Printoteca format
+function mapShippingMethod(shopifyOrder) {
+  const shippingLine = shopifyOrder.shipping_lines && shopifyOrder.shipping_lines[0];
+  return shippingLine ? shippingLine.title : "Standard";  // Default to "Standard" if no title exists
+}
+
+// Maps the Shopify line items to the items expected by Printoteca
+function mapLineItemsToPrintotecaItems(shopifyOrder) {
+  return shopifyOrder.line_items.map(item => ({
+    product_id: item.product_id,
+    quantity: item.quantity,
+    price: item.price,
+    sku: item.sku
+  }));
+}
+
 module.exports = {
   sendOrderToPrintoteca,
   cancelPrintotecaOrder,  // Exported function
