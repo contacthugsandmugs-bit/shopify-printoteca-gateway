@@ -90,13 +90,21 @@ async function sendOrderToPrintoteca(shopifyOrder) {
   const body = {
     external_id: externalId,
     brandName: brandName,
-    comment: `Shopify order ${shopifyOrder.name || shopifyOrder.id}`,
+    comment: "Test order.",  // Optional, you can pass this dynamically
     shipping_address,
     shipping: {
       shippingMethod
     },
     items
   };
+
+  // Optional fields can be added if they exist
+  if (shopifyOrder.comment) {
+    body.comment = shopifyOrder.comment;
+  }
+  if (shopifyOrder.shipping_lines && shopifyOrder.shipping_lines[0].title) {
+    body.shipping.shippingMethod = shopifyOrder.shipping_lines[0].title;
+  }
 
   const bodyString = JSON.stringify(body);
   const signature = signPostBody(bodyString, secretKey);
@@ -113,21 +121,27 @@ async function sendOrderToPrintoteca(shopifyOrder) {
   return response.data;
 }
 
+// Function to sign the post body (for Printoteca API)
+function signPostBody(bodyString, secretKey) {
+  return sha1Hex(bodyString + secretKey);  // Signature generation logic
+}
+
 // New Mapping Functions
 
 // Maps the Shopify order's shipping address to Printoteca format
 function mapShippingAddress(shopifyOrder) {
   const address = shopifyOrder.shipping_address;
   return {
-    name: address.name,
-    address1: address.address1,
-    address2: address.address2,
-    city: address.city,
-    province: address.province,
-    country: address.country,
-    zip: address.zip,
-    phone: address.phone,
-    email: address.email
+    firstName: address.first_name || '',
+    lastName: address.last_name || '',
+    company: address.company || '',
+    address1: address.address1 || '',
+    address2: address.address2 || '',
+    city: address.city || '',
+    county: address.province || '',  // Or map another field if necessary
+    postcode: address.zip || '',
+    country: address.country || '',
+    phone1: address.phone || ''
   };
 }
 
@@ -140,10 +154,18 @@ function mapShippingMethod(shopifyOrder) {
 // Maps the Shopify line items to the items expected by Printoteca
 function mapLineItemsToPrintotecaItems(shopifyOrder) {
   return shopifyOrder.line_items.map(item => ({
-    product_id: item.product_id,
+    pn: item.sku,  // Part number / SKU
     quantity: item.quantity,
-    price: item.price,
-    sku: item.sku
+    retailPrice: item.price,
+    description: item.title,
+    label: {
+      type: "printed",  // Static example
+      name: "ink-label"  // Static example
+    },
+    designs: {
+      front: "https://example.com/front-image.png",  // Optional, make it dynamic if needed
+      back: "https://example.com/back-image.png"   // Optional, make it dynamic if needed
+    }
   }));
 }
 
