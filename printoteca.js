@@ -151,6 +151,7 @@ async function sendOrderToPrintoteca(shopifyOrder) {
 
   const externalId = `shopify:${shopifyOrder.id}`;
 
+  // Creating the order body to send to Printoteca
   const body = {
     external_id: externalId,
     brandName: brandName,
@@ -162,20 +163,31 @@ async function sendOrderToPrintoteca(shopifyOrder) {
     items
   };
 
+  // Log the order body to see exactly what is being sent to Printoteca
+  console.log('DEBUG: Sending order body to Printoteca:', JSON.stringify(body, null, 2));
+
   const bodyString = JSON.stringify(body);
   const signature = signPostBody(bodyString, secretKey);
 
   const url = `${PRINTOTECA_API_BASE}/api/orders.php?AppId=${encodeURIComponent(appId)}&Signature=${signature}`;
 
-  console.log('Sending order to Printoteca', { url, externalId });
+  console.log('DEBUG: URL for Printoteca request:', url);
 
-  const response = await axios.post(url, body, {
-    headers: { 'Content-Type': 'application/json' },
-    timeout: 15000
-  });
+  try {
+    const response = await axios.post(url, body, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 15000
+    });
 
-  return response.data;
+    console.log('DEBUG: Printoteca response:', JSON.stringify(response.data, null, 2));
+
+    return response.data; // Return response from Printoteca
+  } catch (error) {
+    console.error('Printoteca error:', error.response ? error.response.data : error.message);
+    throw new Error('Failed to send order to Printoteca');
+  }
 }
+
 
 // Export necessary functions
 module.exports = {
