@@ -6,11 +6,11 @@ const crypto = require('crypto');
 
 const app = express();
 
-// Body parser middleware to handle raw Shopify webhook payload
+// Use body parser for raw Shopify webhooks (orders-paid)
 app.use(bodyParser.raw({ type: 'application/json' }));
 
-// Shopify Webhook for Order Creation
-app.post('/webhook/shopify/order', async (req, res) => {
+// Shopify Webhook for Order Payment (orders-paid)
+app.post('/webhooks/shopify/orders-paid', async (req, res) => {
   try {
     const hmacHeader = req.get('X-Shopify-Hmac-Sha256');
     const rawBody = req.body;
@@ -21,7 +21,7 @@ app.post('/webhook/shopify/order', async (req, res) => {
     }
 
     const order = JSON.parse(rawBody.toString('utf8'));
-    console.log('Received Shopify Order:', order);
+    console.log('Received Order Payment:', order);
 
     // Send the order to Printoteca
     await sendOrderToPrintoteca(order);
@@ -33,7 +33,7 @@ app.post('/webhook/shopify/order', async (req, res) => {
   }
 });
 
-// Verify Shopify webhook signature
+// Verify Shopify webhook signature to ensure authenticity
 function verifyShopifyWebhook(rawBody, hmacHeader) {
   const secret = process.env.SHOPIFY_SECRET;
   const digest = crypto
@@ -46,7 +46,7 @@ function verifyShopifyWebhook(rawBody, hmacHeader) {
 
 // Send order to Printoteca API
 async function sendOrderToPrintoteca(order) {
-  const apiUrl = 'https://printoteca.ro/api/orders'; // Adjust if Printoteca uses a different URL
+  const apiUrl = 'https://printoteca.ro/api/orders'; // Change this based on Printoteca's API
   const data = {
     external_id: `shopify:${order.id}`,
     brandName: "Your Brand",
