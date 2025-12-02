@@ -61,7 +61,7 @@ function verifyShopifyWebhook(rawBody, hmacHeader) {
 // Retry logic for Printoteca with 5-minute initial delay
 async function sendOrderToPrintotecaWithRetry(order, attempt = 1) {
   const maxAttempts = Number(process.env.PRINTOTECA_MAX_ATTEMPTS || 5);
-  const delayMs = Number(process.env.PRINTOTECA_RETRY_DELAY_MS || 300000);
+  const delayMs = Number(process.env.PRINTOTECA_RETRY_DELAY_MS || 300);
   const waitSec = Math.round(delayMs / 1000);
 
   const doSend = async () => {
