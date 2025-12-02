@@ -1,202 +1,172 @@
 // shopify.js
 const axios = require('axios');
 
-const SHOP = process.env.SHOPIFY_SHOP;           // e.g. hugs-mugs-2.myshopify.com
-const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;   // Admin API access token
-const API_VERSION = '2024-07';                   // adjust when needed
+const SHOP = process.env.SHOPIFY_SHOP;
+const ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
+const API_VERSION = process.env.SHOPIFY_API_VERSION || '2025-01';
 
-if (!SHOP || !TOKEN) {
-  console.warn('Shopify shop or token not configured');
+if (!SHOP || !ACCESS_TOKEN) {
+  console.warn('[shopify] Missing SHOPIFY_SHOP or SHOPIFY_ADMIN_TOKEN');
 }
 
-function shopifyClient() {
-  return axios.create({
-    baseURL: `https://${SHOP}/admin/api/${API_VERSION}/`,
-    headers: {
-      'X-Shopify-Access-Token': TOKEN,
-      'Content-Type': 'application/json',
-      Accept: 'application/json'
-    },
-    timeout: 15000
-  });
-}
+const shopify = axios.create({
+  baseURL: `https://${SHOP}/admin/api/${API_VERSION}`,
+  timeout: 15000,
+  headers: {
+    'X-Shopify-Access-Token': ACCESS_TOKEN,
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  },
+});
 
-async function getShopifyOrder(orderId) {
-  const client = shopifyClient();
-  const res = await client.get(`orders/${orderId}.json`, {
-    params: { fields: 'id,fulfillments,line_items,fulfillment_status,tags' }
-  });
+// ---- basic helpers ----
+
+async function getOrder(orderId) {
+  const res = await shopify.get(`/orders/${orderId}.json`);
   return res.data.order;
 }
 
-function orderHasTracking(order, trackingNumber) {
-  if (!order.fulfillments) return false;
-  for (const f of order.fulfillments) {
-    if (!f) continue;
-    if (Array.isArray(f.tracking_numbers) && f.tracking_numbers.includes(trackingNumber)) {
-      return true;
-    }
-    if (f.tracking_number === trackingNumber) return true;
-  }
-  return false;
+function parseTags(tagString) {
+  if (!tagString) return [];
+  return tagString
+    .split(',')
+    .map(t => t.trim())
+    .filter(Boolean);
 }
 
-async function createShopifyFulfillment(
-  order,
-  trackingNumber,
-  trackingCompany = 'Printoteca',
-  lineItemsOverride
-) {
-  const client = shopifyClient();
-
-  let lineItems;
-  if (Array.isArray(lineItemsOverride) && lineItemsOverride.length) {
-    lineItems = lineItemsOverride;
-  } else {
-    // Fallback: fulfill all items
-    lineItems = order.line_items.map(li => ({
-      id: li.id,
-      quantity: li.quantity
-    }));
-  }
-
-  if (!lineItems.length) {
-    console.log(`No line items to fulfill for order ${order.id}`);
-    return null;
-  }
-
-  const body = {
-    fulfillment: {
-      notify_customer: true,
-      tracking_number: trackingNumber,
-      tracking_company: trackingCompany,
-      line_items: lineItems
-    }
-  };
-
-  const res = await client.post(`orders/${order.id}/fulfillments.json`, body);
-  return res.data.fulfillment;
+function buildTagString(tags) {
+  const unique = Array.from(new Set(tags));
+  return unique.join(', ');
 }
 
-/**
- * Ensure there's a fulfillment with this tracking number for the
- * relevant SKUs (Printoteca items) on a Shopify order.
- */
-async function ensureFulfillmentWithTracking(
-  shopifyOrderId,
-  trackingNumber,
-  trackingCompany = 'Printoteca',
-  printotecaItems
-) {
-  const order = await getShopifyOrder(shopifyOrderId);
+// ---- TAGGING ----
 
-  if (orderHasTracking(order, trackingNumber)) {
-    console.log(
-      `Order ${shopifyOrderId} already has fulfillment with tracking ${trackingNumber}, skipping`
-    );
-    return { status: 'already_exists' };
-  }
-
-  // If we know exactly which items Printoteca fulfilled, match by SKU
-  let lineItemsForFulfillment = null;
-  if (Array.isArray(printotecaItems) && printotecaItems.length) {
-    const skuQtyMap = {};
-
-    for (const pItem of printotecaItems) {
-      const sku = pItem.pn;
-      const qty = Number(pItem.quantity) || 0;
-      if (!sku || !qty) continue;
-      if (!skuQtyMap[sku]) skuQtyMap[sku] = 0;
-      skuQtyMap[sku] += qty;
-    }
-
-    lineItemsForFulfillment = [];
-
-    for (const li of order.line_items) {
-      const sku = li.sku;
-      if (!sku || !skuQtyMap[sku]) continue;
-
-      const qtyToFulfill = Math.min(li.quantity, skuQtyMap[sku]);
-      if (qtyToFulfill > 0) {
-        lineItemsForFulfillment.push({
-          id: li.id,
-          quantity: qtyToFulfill
-        });
-      }
-    }
-  }
-
-  const fulfillment = await createShopifyFulfillment(
-    order,
-    trackingNumber,
-    trackingCompany,
-    lineItemsForFulfillment
-  );
-
-  if (!fulfillment) {
-    return { status: 'no_items' };
-  }
-
-  console.log(`Created fulfillment ${fulfillment.id} on order ${shopifyOrderId}`);
-  return { status: 'created', fulfillmentId: fulfillment.id };
-}
-
-// ---- POD status tagging ----
-
-const POD_STATUS_TAGS = [
-  'POD: in production',
-  'POD: printing',
-  'POD: shipped',
-  'POD: delivered'
-];
-
-/**
- * Set a single POD status tag on an order.
- * - Removes any existing POD: ... tags
- * - Adds newTag (if provided)
- */
-async function setPodStatusTag(orderId, newTag) {
-  const client = shopifyClient();
-
-  // Get current tags
-  const res = await client.get(`orders/${orderId}.json`, {
-    params: { fields: 'id,tags' }
-  });
-
-  let tags = [];
-  const current = res.data.order.tags;
-  if (current && typeof current === 'string') {
-    tags = current
-      .split(',')
-      .map(t => t.trim())
-      .filter(Boolean);
-  }
-
-  // Remove all POD: ... tags
-  tags = tags.filter(t => !POD_STATUS_TAGS.includes(t));
-
-  // Add newTag if provided
-  if (newTag && !tags.includes(newTag)) {
+async function addOrderTag(orderId, newTag) {
+  const order = await getOrder(orderId);
+  const tags = parseTags(order.tags);
+  if (!tags.includes(newTag)) {
     tags.push(newTag);
   }
 
-  const tagsString = tags.join(', ');
-
-  await client.put(`orders/${orderId}.json`, {
+  await shopify.put(`/orders/${orderId}.json`, {
     order: {
       id: orderId,
-      tags: tagsString
-    }
+      tags: buildTagString(tags),
+    },
   });
+}
 
-  console.log(`Set POD status tag for order ${orderId} => [${tagsString}]`);
+async function replacePodStatusTag(orderId, newPodTag) {
+  const order = await getOrder(orderId);
+  let tags = parseTags(order.tags);
 
-  return tagsString;
+  // remove all POD: ... tags
+  tags = tags.filter(tag => !tag.startsWith('POD:'));
+
+  if (newPodTag) {
+    tags.push(newPodTag);
+  }
+
+  await shopify.put(`/orders/${orderId}.json`, {
+    order: {
+      id: orderId,
+      tags: buildTagString(tags),
+    },
+  });
+}
+
+// ---- NOTES ----
+
+async function appendOrderNote(orderId, note) {
+  const order = await getOrder(orderId);
+  const existing = order.note || '';
+  const prefix = existing ? `${existing}\n` : '';
+  const stamp = new Date().toISOString().replace('T', ' ').replace(/\..+/, '');
+  const newNote = `${prefix}[${stamp}] ${note}`;
+
+  await shopify.put(`/orders/${orderId}.json`, {
+    order: {
+      id: orderId,
+      note: newNote,
+    },
+  });
+}
+
+// ---- METAFIELDS ----
+
+async function getOrderMetafields(orderId, namespace) {
+  const params = namespace ? { namespace } : {};
+  const res = await shopify.get(`/orders/${orderId}/metafields.json`, { params });
+  return res.data.metafields || [];
+}
+
+async function getOrderMetafield(orderId, namespace, key) {
+  const metafields = await getOrderMetafields(orderId, namespace);
+  return metafields.find(mf => mf.key === key);
+}
+
+async function setOrderMetafield(orderId, namespace, key, value, type = 'single_line_text_field') {
+  const body = {
+    metafield: {
+      namespace,
+      key,
+      value: String(value),
+      type,
+    },
+  };
+
+  try {
+    // try create
+    await shopify.post(`/orders/${orderId}/metafields.json`, body);
+  } catch (err) {
+    // if already exists, update instead
+    if (err.response && err.response.status === 422) {
+      const existing = await getOrderMetafield(orderId, namespace, key);
+      if (!existing) throw err;
+
+      await shopify.put(`/metafields/${existing.id}.json`, {
+        metafield: {
+          id: existing.id,
+          value: String(value),
+          type,
+        },
+      });
+    } else {
+      throw err;
+    }
+  }
+}
+
+// Specific helpers for Printoteca
+
+async function setPrintotecaOrderIdMetafield(orderId, printotecaOrderId) {
+  return setOrderMetafield(orderId, 'pod', 'printoteca_order_id', String(printotecaOrderId));
+}
+
+async function getPrintotecaOrderIdMetafield(orderId) {
+  const mf = await getOrderMetafield(orderId, 'pod', 'printoteca_order_id');
+  return mf ? mf.value : null;
+}
+
+async function setPrintotecaShippingCostMetafield(orderId, shippingPrice, currency) {
+  if (shippingPrice == null) return;
+
+  // numeric value (you can change to single_line_text_field if you prefer)
+  await setOrderMetafield(orderId, 'pod', 'printoteca_shipping_cost', String(shippingPrice), 'number_decimal');
+  if (currency) {
+    await setOrderMetafield(orderId, 'pod', 'printoteca_shipping_currency', String(currency), 'single_line_text_field');
+  }
 }
 
 module.exports = {
-  shopifyClient,
-  getShopifyOrder,
-  ensureFulfillmentWithTracking,
-  setPodStatusTag
+  shopify,
+  getOrder,
+  addOrderTag,
+  replacePodStatusTag,
+  appendOrderNote,
+  getOrderMetafield,
+  setOrderMetafield,
+  setPrintotecaOrderIdMetafield,
+  getPrintotecaOrderIdMetafield,
+  setPrintotecaShippingCostMetafield,
 };
