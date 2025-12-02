@@ -1,6 +1,9 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
+// Use PRINTOTECA_APP_ID for constructing API base URL
+const PRINTOTECA_API_BASE = 'https://printoteca.ro';  // You can change this if needed
+
 // Function to cancel Printoteca order by Shopify order
 async function cancelPrintotecaOrder(shopifyOrder) {
   const externalId = `shopify:${shopifyOrder.id}`;
