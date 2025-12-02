@@ -11,7 +11,7 @@ async function pollPrintotecaTrackingOnce() {
 
   for (const po of orders) {
     try {
-      const shipping = po.shipping || po.shipping_details || po.shipping_details || {};
+      const shipping = po.shipping || po.shipping_details || {};
       const tracking =
         shipping.trackingNumber ||
         shipping.tracking_number ||
