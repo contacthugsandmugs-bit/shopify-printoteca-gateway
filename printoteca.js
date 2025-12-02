@@ -22,7 +22,7 @@ const {
 } = process.env;
 
 const PRINTOTECA_MAX_ATTEMPTS = Number(process.env.PRINTOTECA_MAX_ATTEMPTS || 5);
-const PRINTOTECA_RETRY_DELAY_MS = Number(process.env.PRINTOTECA_RETRY_DELAY_MS || 300000);
+const PRINTOTECA_RETRY_DELAY_MS = Number(process.env.PRINTOTECA_RETRY_DELAY_MS || 300);
 
 // ------------------------------------------------------------
 // ✅ Use the correct Printoteca domain (printoteca.ro)
