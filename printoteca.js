@@ -147,8 +147,11 @@ function mapShippingAddress(shopifyOrder) {
 
 // Maps the Shopify order's shipping method to Printoteca format
 function mapShippingMethod(shopifyOrder) {
-  const shippingLine = shopifyOrder.shipping_lines && shopifyOrder.shipping_lines[0];
-  return shippingLine ? shippingLine.title : "Standard";  // Default to "Standard" if no title exists
+  // Check if shipping_lines exist and use the first shipping method
+  if (shopifyOrder.shipping_lines && shopifyOrder.shipping_lines[0]) {
+    return shopifyOrder.shipping_lines[0].title || "regular";  // Default to "regular" if no title exists
+  }
+  return "regular";  // Default if shipping_lines are undefined or empty
 }
 
 // Maps the Shopify line items to the items expected by Printoteca
