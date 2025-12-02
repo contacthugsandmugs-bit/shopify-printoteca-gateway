@@ -1,210 +1,87 @@
-// shopify.js
 const axios = require('axios');
 
-const SHOP = process.env.SHOPIFY_SHOP;
-const ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
-const API_VERSION = process.env.SHOPIFY_API_VERSION || '2025-01';
+const SHOP = process.env.SHOPIFY_SHOP;           // e.g. my-store.myshopify.com
+const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;   // Admin API access token
+const API_VERSION = '2024-07';                   // adjust when needed
 
-if (!SHOP || !ACCESS_TOKEN) {
-  console.warn('[shopify] Missing SHOPIFY_SHOP or SHOPIFY_ADMIN_TOKEN');
+if (!SHOP || !TOKEN) {
+  console.warn('Shopify shop or token not configured');
 }
 
-const shopify = axios.create({
-  baseURL: `https://${SHOP}/admin/api/${API_VERSION}`,
-  timeout: 15000,
-  headers: {
-    'X-Shopify-Access-Token': ACCESS_TOKEN,
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  },
-});
+function shopifyClient() {
+  return axios.create({
+    baseURL: `https://${SHOP}/admin/api/${API_VERSION}/`,
+    headers: {
+      'X-Shopify-Access-Token': TOKEN,
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    timeout: 15000
+  });
+}
 
-// -----------------------------------------------------
-// basic helpers
-// -----------------------------------------------------
-async function getOrder(orderId) {
-  const res = await shopify.get(`/orders/${orderId}.json`);
+async function getShopifyOrder(orderId) {
+  const client = shopifyClient();
+  const res = await client.get(`orders/${orderId}.json`, {
+    params: { fields: 'id,fulfillments,line_items,fulfillment_status' }
+  });
   return res.data.order;
 }
 
-function parseTags(tagString) {
-  if (!tagString) return [];
-  return tagString
-    .split(',')
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
-
-function buildTagString(tags) {
-  const unique = Array.from(new Set(tags));
-  return unique.join(', ');
-}
-
-// -----------------------------------------------------
-// TAGGING
-// -----------------------------------------------------
-async function addOrderTag(orderId, newTag) {
-  const order = await getOrder(orderId);
-  const tags = parseTags(order.tags);
-
-  if (!tags.includes(newTag)) {
-    tags.push(newTag);
+function orderHasTracking(order, trackingNumber) {
+  if (!order.fulfillments) return false;
+  for (const f of order.fulfillments) {
+    if (!f) continue;
+    if (Array.isArray(f.tracking_numbers) && f.tracking_numbers.includes(trackingNumber)) {
+      return true;
+    }
+    if (f.tracking_number === trackingNumber) return true;
   }
-
-  await shopify.put(`/orders/${orderId}.json`, {
-    order: {
-      id: orderId,
-      tags: buildTagString(tags),
-    },
-  });
+  return false;
 }
 
-async function replacePodStatusTag(orderId, newPodTag) {
-  const order = await getOrder(orderId);
-  let tags = parseTags(order.tags);
+async function createShopifyFulfillment(order, trackingNumber, trackingCompany = 'Printoteca') {
+  const client = shopifyClient();
 
-  // remove all POD: ... tags
-  tags = tags.filter((tag) => !tag.startsWith('POD:'));
+  // Simple: fulfill all line items in this order
+  const lineItems = order.line_items.map(li => ({
+    id: li.id,
+    quantity: li.quantity
+  }));
 
-  if (newPodTag) {
-    tags.push(newPodTag);
-  }
-
-  await shopify.put(`/orders/${orderId}.json`, {
-    order: {
-      id: orderId,
-      tags: buildTagString(tags),
-    },
-  });
-}
-
-// -----------------------------------------------------
-// NOTES
-// -----------------------------------------------------
-async function appendOrderNote(orderId, note) {
-  const order = await getOrder(orderId);
-  const existing = order.note || '';
-  const prefix = existing ? `${existing}\n` : '';
-
-  const stamp = new Date()
-    .toISOString()
-    .replace('T', ' ')
-    .replace(/\..+/, '');
-
-  const newNote = `${prefix}[${stamp}] ${note}`;
-
-  await shopify.put(`/orders/${orderId}.json`, {
-    order: {
-      id: orderId,
-      note: newNote,
-    },
-  });
-}
-
-// -----------------------------------------------------
-// METAFIELDS
-// -----------------------------------------------------
-async function getOrderMetafields(orderId, namespace) {
-  const params = namespace ? { namespace } : {};
-  const res = await shopify.get(`/orders/${orderId}/metafields.json`, {
-    params,
-  });
-  return res.data.metafields || [];
-}
-
-async function getOrderMetafield(orderId, namespace, key) {
-  const metafields = await getOrderMetafields(orderId, namespace);
-  return metafields.find((mf) => mf.key === key);
-}
-
-async function setOrderMetafield(
-  orderId,
-  namespace,
-  key,
-  value,
-  type = 'single_line_text_field',
-) {
   const body = {
-    metafield: {
-      namespace,
-      key,
-      value: String(value),
-      type,
-    },
+    fulfillment: {
+      notify_customer: true,
+      tracking_number: trackingNumber,
+      tracking_company: trackingCompany,
+      line_items: lineItems
+    }
   };
 
-  try {
-    // try create
-    await shopify.post(`/orders/${orderId}/metafields.json`, body);
-  } catch (err) {
-    // if already exists, update instead
-    if (err.response && err.response.status === 422) {
-      const existing = await getOrderMetafield(orderId, namespace, key);
-      if (!existing) throw err;
-
-      await shopify.put(`/metafields/${existing.id}.json`, {
-        metafield: {
-          id: existing.id,
-          value: String(value),
-          type,
-        },
-      });
-    } else {
-      throw err;
-    }
-  }
+  const res = await client.post(`orders/${order.id}/fulfillments.json`, body);
+  return res.data.fulfillment;
 }
 
-// Specific helpers for Printoteca
+async function ensureFulfillmentWithTracking(
+  shopifyOrderId,
+  trackingNumber,
+  trackingCompany = 'Printoteca'
+) {
+  const order = await getShopifyOrder(shopifyOrderId);
 
-// B. Printoteca order id metafield
-async function setPrintotecaOrderIdMetafield(orderId, printotecaOrderId) {
-  return setOrderMetafield(
-    orderId,
-    'pod',
-    'printoteca_order_id',
-    String(printotecaOrderId),
-  );
-}
-
-async function getPrintotecaOrderIdMetafield(orderId) {
-  const mf = await getOrderMetafield(orderId, 'pod', 'printoteca_order_id');
-  return mf ? mf.value : null;
-}
-
-// G. Printoteca shipping cost metafields
-async function setPrintotecaShippingCostMetafield(orderId, shippingPrice, currency) {
-  if (shippingPrice == null) return;
-
-  // numeric value
-  await setOrderMetafield(
-    orderId,
-    'pod',
-    'printoteca_shipping_cost',
-    String(shippingPrice),
-    'number_decimal',
-  );
-
-  if (currency) {
-    await setOrderMetafield(
-      orderId,
-      'pod',
-      'printoteca_shipping_currency',
-      String(currency),
-      'single_line_text_field',
+  if (orderHasTracking(order, trackingNumber)) {
+    console.log(
+      `Order ${shopifyOrderId} already has fulfillment with tracking ${trackingNumber}, skipping`
     );
+    return { status: 'already_exists' };
   }
+
+  const fulfillment = await createShopifyFulfillment(order, trackingNumber, trackingCompany);
+  console.log(`Created fulfillment ${fulfillment.id} on order ${shopifyOrderId}`);
+  return { status: 'created', fulfillmentId: fulfillment.id };
 }
 
 module.exports = {
-  shopify,
-  getOrder,
-  addOrderTag,
-  replacePodStatusTag,
-  appendOrderNote,
-  getOrderMetafield,
-  setOrderMetafield,
-  setPrintotecaOrderIdMetafield,
-  getPrintotecaOrderIdMetafield,
-  setPrintotecaShippingCostMetafield,
+  getShopifyOrder,
+  ensureFulfillmentWithTracking
 };
