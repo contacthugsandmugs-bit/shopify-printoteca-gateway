@@ -1,6 +1,7 @@
 const axios = require('axios');
 const crypto = require('crypto');
 
+// Function to cancel Printoteca order by Shopify order
 async function cancelPrintotecaOrder(shopifyOrder) {
   const externalId = `shopify:${shopifyOrder.id}`;
 
@@ -111,7 +112,7 @@ async function sendOrderToPrintoteca(shopifyOrder) {
 
 module.exports = {
   sendOrderToPrintoteca,
-  cancelPrintotecaOrder,
+  cancelPrintotecaOrder,  // Exported function
   findPrintotecaOrderByExternalId,
   deletePrintotecaOrderById
 };
