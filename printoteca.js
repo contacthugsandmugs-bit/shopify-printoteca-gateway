@@ -2,7 +2,51 @@ const axios = require('axios');
 const crypto = require('crypto');
 const PRINTOTECA_API_BASE = 'https://printoteca.ro';
 
-// Helpers to extract Teeinblue design URLs from line item properties
+// Function to fetch recent Printoteca orders based on a time range
+async function listRecentPrintotecaOrders(daysBack = 14) {
+  const since = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+  return listPrintotecaOrders({ created_at_min: since });
+}
+
+// Function to list all Printoteca orders
+async function listPrintotecaOrders(params = {}) {
+  const { appId, secretKey } = getAuthConfig();
+  const qs = new URLSearchParams();
+  qs.append('AppId', appId);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) qs.append(key, value);
+  });
+
+  const signature = sha1Hex(qs.toString() + secretKey);
+  qs.append('Signature', signature);
+
+  const url = `${PRINTOTECA_API_BASE}/api/orders.php?${qs.toString()}`;
+  const res = await axios.get(url, {
+    headers: { Accept: 'application/json' },
+    timeout: 20000
+  });
+
+  const data = res.data;
+  return Array.isArray(data.orders) ? data.orders : [];
+}
+
+// Basic auth + signing helpers
+function getAuthConfig() {
+  const appId = process.env.PRINTOTECA_APP_ID;
+  const secretKey = process.env.PRINTOTECA_SECRET_KEY;
+
+  if (!appId || !secretKey) {
+    throw new Error('Printoteca AppId/SecretKey not configured');
+  }
+
+  return { appId, secretKey };
+}
+
+function sha1Hex(str) {
+  return crypto.createHash('sha1').update(str, 'utf8').digest('hex');
+}
+
+// Extract Teeinblue design links from the line item properties
 function extractTeeinblueDesigns(lineItem) {
   const designs = {};
   if (!Array.isArray(lineItem.properties)) return designs;
@@ -10,7 +54,6 @@ function extractTeeinblueDesigns(lineItem) {
   for (const prop of lineItem.properties) {
     if (!prop || !prop.name) continue;
     if (prop.name.startsWith('_tib_design_link')) {
-      // First link -> front, second -> back
       if (!designs.front) designs.front = prop.value;
       else if (!designs.back) designs.back = prop.value;
     }
@@ -19,7 +62,7 @@ function extractTeeinblueDesigns(lineItem) {
   return designs;
 }
 
-// Map Shopify order → Printoteca fields
+// Map Shopify order to Printoteca fields
 function mapShippingAddress(shopifyOrder) {
   const addr = shopifyOrder.shipping_address || {};
   return {
@@ -47,12 +90,13 @@ function mapShippingMethod(shopifyOrder) {
   return 'regular';
 }
 
+// Map Shopify line items to Printoteca item format
 function mapLineItemsToPrintotecaItems(shopifyOrder) {
   const items = [];
 
   for (const li of shopifyOrder.line_items) {
     const pn = li.sku;
-    console.log(`DEBUG: Extracted SKU from Shopify: ${pn}`);  // Debug the SKU
+    console.log(`DEBUG: Extracted SKU from Shopify: ${pn}`);
     if (!pn) {
       console.warn('Line item without SKU, skipping', li.id);
       continue;
@@ -77,19 +121,14 @@ function mapLineItemsToPrintotecaItems(shopifyOrder) {
   return items;
 }
 
-// Signature helpers (Printoteca / Inkthreadable-style)
+// Generate the signature for POST requests to Printoteca API
 function signPostBody(bodyString, secretKey) {
-  return crypto
-    .createHash('sha1')
-    .update(bodyString + secretKey)
-    .digest('hex');
+  return crypto.createHash('sha1').update(bodyString + secretKey).digest('hex');
 }
 
+// Generate the signature for GET requests to Printoteca API
 function signGetQuery(queryStringWithoutSignature, secretKey) {
-  return crypto
-    .createHash('sha1')
-    .update(queryStringWithoutSignature + secretKey)
-    .digest('hex');
+  return crypto.createHash('sha1').update(queryStringWithoutSignature + secretKey).digest('hex');
 }
 
 // Create order in Printoteca
@@ -138,4 +177,8 @@ async function sendOrderToPrintoteca(shopifyOrder) {
   return response.data;
 }
 
-module.exports = { sendOrderToPrintoteca, listRecentPrintotecaOrders };
+// Export necessary functions
+module.exports = {
+  sendOrderToPrintoteca,
+  listRecentPrintotecaOrders
+};
