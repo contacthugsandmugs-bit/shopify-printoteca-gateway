@@ -78,7 +78,7 @@ async function sendOrderToPrintoteca(shopifyOrder) {
   }
 
   const shipping_address = mapShippingAddress(shopifyOrder);
-  const shippingMethod = mapShippingMethod(shopifyOrder);
+  const shippingMethod = mapShippingMethod(shopifyOrder);  // Updated mapping function
   const items = mapLineItemsToPrintotecaItems(shopifyOrder);
 
   if (!items.length) {
@@ -148,10 +148,11 @@ function mapShippingAddress(shopifyOrder) {
 // Maps the Shopify order's shipping method to Printoteca format
 function mapShippingMethod(shopifyOrder) {
   // Check if shipping_lines exist and use the first shipping method
-  if (shopifyOrder.shipping_lines && shopifyOrder.shipping_lines[0]) {
-    return shopifyOrder.shipping_lines[0].title || "regular";  // Default to "regular" if no title exists
+  if (shopifyOrder.shipping_lines && shopifyOrder.shipping_lines.length > 0) {
+    const shippingLine = shopifyOrder.shipping_lines[0];
+    return shippingLine.title || "regular";  // Default to "regular" if no title exists
   }
-  return "regular";  // Default if shipping_lines are undefined or empty
+  return "regular";  // Default if shipping_lines is undefined or empty
 }
 
 // Maps the Shopify line items to the items expected by Printoteca
