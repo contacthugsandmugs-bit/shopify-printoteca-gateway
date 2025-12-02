@@ -1,23 +1,6 @@
 const axios = require('axios');
 const crypto = require('crypto');
-
-// Use PRINTOTECA_APP_ID for constructing API base URL
-const PRINTOTECA_API_BASE = 'https://printoteca.ro';  // You can change this if needed
-
-// Function to cancel Printoteca order by Shopify order
-async function cancelPrintotecaOrder(shopifyOrder) {
-  const externalId = `shopify:${shopifyOrder.id}`;
-
-  const printotecaOrder = await findPrintotecaOrderByExternalId(externalId);
-
-  if (!printotecaOrder) {
-    console.log(`No Printoteca order found for ${externalId}`);
-    return;
-  }
-
-  const resp = await deletePrintotecaOrderById(printotecaOrder.id);
-  console.log(`Cancelled Printoteca order ${printotecaOrder.id} for external_id=${externalId}`, resp);
-}
+const PRINTOTECA_API_BASE = 'https://printoteca.ro';
 
 // Function to find Printoteca order by external ID (Shopify order ID)
 async function findPrintotecaOrderByExternalId(externalId) {
@@ -78,7 +61,7 @@ async function sendOrderToPrintoteca(shopifyOrder) {
   }
 
   const shipping_address = mapShippingAddress(shopifyOrder);
-  const shippingMethod = mapShippingMethod(shopifyOrder);  // Updated mapping function
+  const shippingMethod = mapShippingMethod(shopifyOrder);
   const items = mapLineItemsToPrintotecaItems(shopifyOrder);
 
   if (!items.length) {
@@ -90,21 +73,13 @@ async function sendOrderToPrintoteca(shopifyOrder) {
   const body = {
     external_id: externalId,
     brandName: brandName,
-    comment: "Test order.",  // Optional, you can pass this dynamically
+    comment: `Shopify order ${shopifyOrder.name || shopifyOrder.id}`,
     shipping_address,
     shipping: {
       shippingMethod
     },
     items
   };
-
-  // Optional fields can be added if they exist
-  if (shopifyOrder.comment) {
-    body.comment = shopifyOrder.comment;
-  }
-  if (shopifyOrder.shipping_lines && shopifyOrder.shipping_lines[0].title) {
-    body.shipping.shippingMethod = shopifyOrder.shipping_lines[0].title;
-  }
 
   const bodyString = JSON.stringify(body);
   const signature = signPostBody(bodyString, secretKey);
@@ -121,61 +96,9 @@ async function sendOrderToPrintoteca(shopifyOrder) {
   return response.data;
 }
 
-// Function to sign the post body (for Printoteca API)
-function signPostBody(bodyString, secretKey) {
-  return sha1Hex(bodyString + secretKey);  // Signature generation logic
-}
-
-// New Mapping Functions
-
-// Maps the Shopify order's shipping address to Printoteca format
-function mapShippingAddress(shopifyOrder) {
-  const address = shopifyOrder.shipping_address;
-  return {
-    firstName: address.first_name || '',
-    lastName: address.last_name || '',
-    company: address.company || '',
-    address1: address.address1 || '',
-    address2: address.address2 || '',
-    city: address.city || '',
-    county: address.province || '',  // Or map another field if necessary
-    postcode: address.zip || '',
-    country: address.country || '',
-    phone1: address.phone || ''
-  };
-}
-
-// Maps the Shopify order's shipping method to Printoteca format
-function mapShippingMethod(shopifyOrder) {
-  // Check if shipping_lines exist and use the first shipping method
-  if (shopifyOrder.shipping_lines && shopifyOrder.shipping_lines.length > 0) {
-    const shippingLine = shopifyOrder.shipping_lines[0];
-    return shippingLine.title || "regular";  // Default to "regular" if no title exists
-  }
-  return "regular";  // Default if shipping_lines is undefined or empty
-}
-
-// Maps the Shopify line items to the items expected by Printoteca
-function mapLineItemsToPrintotecaItems(shopifyOrder) {
-  return shopifyOrder.line_items.map(item => ({
-    pn: item.sku,  // Part number / SKU
-    quantity: item.quantity,
-    retailPrice: item.price,
-    description: item.title,
-    label: {
-      type: "printed",  // Static example
-      name: "ink-label"  // Static example
-    },
-    designs: {
-      front: "https://example.com/front-image.png",  // Optional, make it dynamic if needed
-      back: "https://example.com/back-image.png"   // Optional, make it dynamic if needed
-    }
-  }));
-}
-
 module.exports = {
   sendOrderToPrintoteca,
-  cancelPrintotecaOrder,  // Exported function
+  cancelPrintotecaOrder,
   findPrintotecaOrderByExternalId,
   deletePrintotecaOrderById
 };
