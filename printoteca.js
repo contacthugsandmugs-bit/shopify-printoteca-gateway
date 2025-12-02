@@ -58,7 +58,6 @@ function buildSignedPostRequest(path, body) {
 
 // ---------------------------
 // Low-level Printoteca client
-// (full API functionality)
 // ---------------------------
 
 async function createPrintotecaOrder(orderBody) {
@@ -117,7 +116,6 @@ async function getPrintotecaOrderById(id) {
   return res.data;
 }
 
-// Mirrors GET /api/orders/count.php
 async function countPrintotecaOrders(params = {}) {
   const url = buildSignedGetUrl('/api/orders/count.php', params);
 
@@ -128,8 +126,7 @@ async function countPrintotecaOrders(params = {}) {
   return res.data;
 }
 
-// Docs show DELETE /api/orders.php but example uses GET with id param.
-// We follow docs example and call GET with id=...
+// We follow docs example and call GET /api/orders.php with id for delete
 async function deletePrintotecaOrderById(id) {
   const url = buildSignedGetUrl('/api/orders.php', { id });
 
@@ -146,7 +143,7 @@ async function findPrintotecaOrderByExternalId(externalId, daysBack = 30) {
     orders.find(
       (o) =>
         o.external_id === externalId ||
-        o.externalId === externalId // defensive
+        o.externalId === externalId
     ) || null
   );
 }
@@ -162,7 +159,6 @@ function extractTeeinblueDesigns(lineItem) {
   for (const prop of lineItem.properties) {
     if (!prop || !prop.name) continue;
     if (prop.name.startsWith('_tib_design_link')) {
-      // First link -> front, second -> back
       if (!designs.front) designs.front = prop.value;
       else if (!designs.back) designs.back = prop.value;
     }
@@ -186,101 +182,4 @@ function mapShippingAddress(shopifyOrder) {
     address2: addr.address2 || '',
     city: addr.city || '',
     county: addr.province || '',
-    postcode: addr.zip || '',
-    country: addr.country || '',
-    phone1: addr.phone || ''
-  };
-}
-
-function mapShippingMethod(shopifyOrder) {
-  const defaultMethod = process.env.DEFAULT_SHIPPING_METHOD || 'courier';
-  const shippingLines = shopifyOrder.shipping_lines || [];
-  if (!shippingLines.length) return defaultMethod;
-
-  const title = (shippingLines[0].title || '').toLowerCase();
-
-  if (title.includes('courier') || title.includes('express')) return 'courier';
-  if (title.includes('recorded') || title.includes('tracked') || title.includes('signed')) {
-    return 'recorded';
-  }
-
-  return 'regular';
-}
-
-function mapLineItemsToPrintotecaItems(shopifyOrder) {
-  const items = [];
-  const lineItems = shopifyOrder.line_items || [];
-
-  for (const li of lineItems) {
-    const pn = li.sku;
-    if (!pn) {
-      console.warn('Printoteca: line item without SKU, skipping', li.id);
-      continue;
-    }
-
-    const designs = extractTeeinblueDesigns(li);
-
-    const item = {
-      pn,
-      quantity: li.quantity,
-      retailPrice: Number(li.price),
-      description: li.name,
-      designs: {}
-    };
-
-    if (designs.front) item.designs.front = designs.front;
-    if (designs.back) item.designs.back = designs.back;
-
-    items.push(item);
-  }
-
-  return items;
-}
-
-function mapShopifyOrderToPrintotecaOrder(shopifyOrder) {
-  const shipping_address = mapShippingAddress(shopifyOrder);
-  const shippingMethod = mapShippingMethod(shopifyOrder);
-  const items = mapLineItemsToPrintotecaItems(shopifyOrder);
-
-  if (!items.length) {
-    throw new Error(`Printoteca: no items mapped from Shopify order ${shopifyOrder.id}`);
-  }
-
-  const brandName = process.env.PRINTOTECA_BRAND_NAME || '';
-  const external_id = `shopify:${shopifyOrder.id}`;
-
-  return {
-    external_id,
-    brandName,
-    comment: `Shopify order ${shopifyOrder.name || shopifyOrder.id}`,
-    shipping_address,
-    shipping: {
-      shippingMethod
-    },
-    items
-  };
-}
-
-async function createPrintotecaOrderFromShopifyOrder(shopifyOrder) {
-  const body = mapShopifyOrderToPrintotecaOrder(shopifyOrder);
-  const data = await createPrintotecaOrder(body);
-  return data;
-}
-
-// ---------------------------
-// Exports
-// ---------------------------
-
-module.exports = {
-  // low-level API
-  createPrintotecaOrder,
-  listPrintotecaOrders,
-  listRecentPrintotecaOrders,
-  getPrintotecaOrderById,
-  deletePrintotecaOrderById,
-  countPrintotecaOrders,
-  findPrintotecaOrderByExternalId,
-  // mapping helpers
-  mapShopifyOrderToPrintotecaOrder,
-  createPrintotecaOrderFromShopifyOrder
-};
+    postcode
