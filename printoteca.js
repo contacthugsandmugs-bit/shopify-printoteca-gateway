@@ -1,6 +1,19 @@
 const axios = require('axios');
 const crypto = require('crypto');
-const PRINTOTECA_API_BASE = 'https://printoteca.ro';
+
+async function cancelPrintotecaOrder(shopifyOrder) {
+  const externalId = `shopify:${shopifyOrder.id}`;
+
+  const printotecaOrder = await findPrintotecaOrderByExternalId(externalId);
+
+  if (!printotecaOrder) {
+    console.log(`No Printoteca order found for ${externalId}`);
+    return;
+  }
+
+  const resp = await deletePrintotecaOrderById(printotecaOrder.id);
+  console.log(`Cancelled Printoteca order ${printotecaOrder.id} for external_id=${externalId}`, resp);
+}
 
 // Function to find Printoteca order by external ID (Shopify order ID)
 async function findPrintotecaOrderByExternalId(externalId) {
