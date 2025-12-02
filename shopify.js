@@ -15,12 +15,13 @@ const shopify = axios.create({
   headers: {
     'X-Shopify-Access-Token': ACCESS_TOKEN,
     'Content-Type': 'application/json',
-    'Accept': 'application/json',
+    Accept: 'application/json',
   },
 });
 
-// ---- basic helpers ----
-
+// -----------------------------------------------------
+// basic helpers
+// -----------------------------------------------------
 async function getOrder(orderId) {
   const res = await shopify.get(`/orders/${orderId}.json`);
   return res.data.order;
@@ -30,7 +31,7 @@ function parseTags(tagString) {
   if (!tagString) return [];
   return tagString
     .split(',')
-    .map(t => t.trim())
+    .map((t) => t.trim())
     .filter(Boolean);
 }
 
@@ -39,11 +40,13 @@ function buildTagString(tags) {
   return unique.join(', ');
 }
 
-// ---- TAGGING ----
-
+// -----------------------------------------------------
+// TAGGING
+// -----------------------------------------------------
 async function addOrderTag(orderId, newTag) {
   const order = await getOrder(orderId);
   const tags = parseTags(order.tags);
+
   if (!tags.includes(newTag)) {
     tags.push(newTag);
   }
@@ -61,7 +64,7 @@ async function replacePodStatusTag(orderId, newPodTag) {
   let tags = parseTags(order.tags);
 
   // remove all POD: ... tags
-  tags = tags.filter(tag => !tag.startsWith('POD:'));
+  tags = tags.filter((tag) => !tag.startsWith('POD:'));
 
   if (newPodTag) {
     tags.push(newPodTag);
@@ -75,13 +78,19 @@ async function replacePodStatusTag(orderId, newPodTag) {
   });
 }
 
-// ---- NOTES ----
-
+// -----------------------------------------------------
+// NOTES
+// -----------------------------------------------------
 async function appendOrderNote(orderId, note) {
   const order = await getOrder(orderId);
   const existing = order.note || '';
   const prefix = existing ? `${existing}\n` : '';
-  const stamp = new Date().toISOString().replace('T', ' ').replace(/\..+/, '');
+
+  const stamp = new Date()
+    .toISOString()
+    .replace('T', ' ')
+    .replace(/\..+/, '');
+
   const newNote = `${prefix}[${stamp}] ${note}`;
 
   await shopify.put(`/orders/${orderId}.json`, {
@@ -92,20 +101,29 @@ async function appendOrderNote(orderId, note) {
   });
 }
 
-// ---- METAFIELDS ----
-
+// -----------------------------------------------------
+// METAFIELDS
+// -----------------------------------------------------
 async function getOrderMetafields(orderId, namespace) {
   const params = namespace ? { namespace } : {};
-  const res = await shopify.get(`/orders/${orderId}/metafields.json`, { params });
+  const res = await shopify.get(`/orders/${orderId}/metafields.json`, {
+    params,
+  });
   return res.data.metafields || [];
 }
 
 async function getOrderMetafield(orderId, namespace, key) {
   const metafields = await getOrderMetafields(orderId, namespace);
-  return metafields.find(mf => mf.key === key);
+  return metafields.find((mf) => mf.key === key);
 }
 
-async function setOrderMetafield(orderId, namespace, key, value, type = 'single_line_text_field') {
+async function setOrderMetafield(
+  orderId,
+  namespace,
+  key,
+  value,
+  type = 'single_line_text_field',
+) {
   const body = {
     metafield: {
       namespace,
@@ -139,8 +157,14 @@ async function setOrderMetafield(orderId, namespace, key, value, type = 'single_
 
 // Specific helpers for Printoteca
 
+// B. Printoteca order id metafield
 async function setPrintotecaOrderIdMetafield(orderId, printotecaOrderId) {
-  return setOrderMetafield(orderId, 'pod', 'printoteca_order_id', String(printotecaOrderId));
+  return setOrderMetafield(
+    orderId,
+    'pod',
+    'printoteca_order_id',
+    String(printotecaOrderId),
+  );
 }
 
 async function getPrintotecaOrderIdMetafield(orderId) {
@@ -148,13 +172,27 @@ async function getPrintotecaOrderIdMetafield(orderId) {
   return mf ? mf.value : null;
 }
 
+// G. Printoteca shipping cost metafields
 async function setPrintotecaShippingCostMetafield(orderId, shippingPrice, currency) {
   if (shippingPrice == null) return;
 
-  // numeric value (you can change to single_line_text_field if you prefer)
-  await setOrderMetafield(orderId, 'pod', 'printoteca_shipping_cost', String(shippingPrice), 'number_decimal');
+  // numeric value
+  await setOrderMetafield(
+    orderId,
+    'pod',
+    'printoteca_shipping_cost',
+    String(shippingPrice),
+    'number_decimal',
+  );
+
   if (currency) {
-    await setOrderMetafield(orderId, 'pod', 'printoteca_shipping_currency', String(currency), 'single_line_text_field');
+    await setOrderMetafield(
+      orderId,
+      'pod',
+      'printoteca_shipping_currency',
+      String(currency),
+      'single_line_text_field',
+    );
   }
 }
 
