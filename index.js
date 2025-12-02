@@ -4,44 +4,30 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
 
-const {
-  sendOrderToPrintoteca,
-  cancelPrintotecaOrderFromShopifyOrderId,
-} = require('./printoteca');
-
-const {
-  pollPrintotecaTrackingOnce,
-  resyncSingleShopifyOrderFromPrintoteca,
-} = require('./tracking');
+const { sendOrderToPrintoteca } = require('./printoteca');
+const { pollPrintotecaTrackingOnce } = require('./tracking');
 
 const app = express();
 
 // simple health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-// Shopify webhook needs raw body for HMAC verification (paid)
+// Shopify webhook needs raw body for HMAC verification
 app.use(
   '/webhooks/shopify/orders-paid',
   bodyParser.raw({ type: 'application/json' })
 );
 
-// Shopify webhook needs raw body for HMAC verification (cancelled)
-app.use(
-  '/webhooks/shopify/orders-cancelled',
-  bodyParser.raw({ type: 'application/json' })
-);
-
-// -----------------------------------------------------
-// Shopify orders-paid webhook (UNCHANGED logic)
-// -----------------------------------------------------
+// Shopify orders-paid webhook
 app.post('/webhooks/shopify/orders-paid', async (req, res) => {
   try {
     const hmacHeader = req.get('X-Shopify-Hmac-Sha256');
     const topic = req.get('X-Shopify-Topic');
+
     const rawBody = req.body; // Buffer
 
     if (!verifyShopifyWebhook(rawBody, hmacHeader)) {
-      console.warn('Invalid Shopify webhook signature (orders-paid)');
+      console.warn('Invalid Shopify webhook signature');
       return res.status(401).send('Unauthorized');
     }
 
@@ -56,60 +42,13 @@ app.post('/webhooks/shopify/orders-paid', async (req, res) => {
     sendOrderToPrintotecaWithRetry(order);
 
     // Immediately reply OK to Shopify so webhook doesn't fail
-    return res.status(200).send('OK');
+    res.status(200).send('OK');
   } catch (err) {
     console.error('Error handling orders-paid webhook', err);
-    return res.status(500).send('Error');
+    res.status(500).send('Error');
   }
 });
 
-// -----------------------------------------------------
-// NEW: Shopify orders-cancelled webhook (A)
-// -----------------------------------------------------
-app.post('/webhooks/shopify/orders-cancelled', async (req, res) => {
-  try {
-    const hmacHeader = req.get('X-Shopify-Hmac-Sha256');
-    const topic = req.get('X-Shopify-Topic');
-    const rawBody = req.body; // Buffer
-
-    if (!verifyShopifyWebhook(rawBody, hmacHeader)) {
-      console.warn('Invalid Shopify webhook signature (orders-cancelled)');
-      return res.status(401).send('Unauthorized');
-    }
-
-    if (topic !== 'orders/cancelled') {
-      return res.status(200).send('Ignored');
-    }
-
-    const order = JSON.parse(rawBody.toString('utf8'));
-    const shopifyOrderId = order.id;
-
-    console.log(
-      `Received cancelled order ${shopifyOrderId} / ${order.name} – cancelling at Printoteca`
-    );
-
-    // Run cancellation in background – don't block Shopify
-    (async () => {
-      try {
-        await cancelPrintotecaOrderFromShopifyOrderId(shopifyOrderId);
-      } catch (err) {
-        console.error(
-          `Error cancelling Printoteca order for Shopify order ${shopifyOrderId}:`,
-          err && err.message ? err.message : err
-        );
-      }
-    })();
-
-    return res.status(200).send('OK');
-  } catch (err) {
-    console.error('Error handling orders-cancelled webhook', err);
-    return res.status(500).send('Error');
-  }
-});
-
-// -----------------------------------------------------
-// Verify Shopify webhook HMAC (same for both webhooks)
-// -----------------------------------------------------
 function verifyShopifyWebhook(rawBody, hmacHeader) {
   if (!hmacHeader) return false;
   const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
@@ -126,21 +65,22 @@ function verifyShopifyWebhook(rawBody, hmacHeader) {
   return crypto.timingSafeEqual(digestBuffer, hmacBuffer);
 }
 
-// -----------------------------------------------------
-// Retry logic for Printoteca with 5-minute initial delay
-// (original working logic – kept as-is)
-// -----------------------------------------------------
+// ---- Retry logic for Printoteca with 5-minute initial delay ----
+
 async function sendOrderToPrintotecaWithRetry(order, attempt = 1) {
   const maxAttempts = Number(process.env.PRINTOTECA_MAX_ATTEMPTS || 5);
+  // 5 minutes = 300000 ms (you can override with env var if you want)
   const delayMs = Number(process.env.PRINTOTECA_RETRY_DELAY_MS || 300000);
+
   const waitSec = Math.round(delayMs / 1000);
 
+  // Inner function that actually calls Printoteca
   const doSend = async () => {
     try {
       const resp = await sendOrderToPrintoteca(order);
       console.log(
-        `Sent order ${order.id} to Printoteca on attempt ${attempt}, response:`,
-        resp
+        `Sent order ${order.id} to Printoteca on attempt ${attempt}, status:`,
+        resp.status
       );
     } catch (err) {
       const msg = err.response?.data || err.message || '';
@@ -174,13 +114,12 @@ async function sendOrderToPrintotecaWithRetry(order, attempt = 1) {
       doSend();
     }, delayMs);
   } else {
+    // For retries, we already waited before scheduling this call
     await doSend();
   }
 }
 
-// -----------------------------------------------------
 // tracking job endpoint (for cron / manual runs)
-// -----------------------------------------------------
 app.get('/jobs/pull-printoteca-tracking', async (req, res) => {
   try {
     const jobToken = process.env.JOB_SECRET;
@@ -189,43 +128,10 @@ app.get('/jobs/pull-printoteca-tracking', async (req, res) => {
     }
 
     const result = await pollPrintotecaTrackingOnce();
-    return res.json(result);
+    res.json(result);
   } catch (err) {
     console.error('Tracking job error', err);
-    return res.status(500).send('Error');
-  }
-});
-
-// -----------------------------------------------------
-// NEW: manual "resync this order from Printoteca" (C)
-// GET /admin/printoteca-sync/:orderId?token=JOB_SECRET
-// -----------------------------------------------------
-app.get('/admin/printoteca-sync/:orderId', async (req, res) => {
-  try {
-    const jobToken = process.env.JOB_SECRET;
-    if (jobToken && req.query.token !== jobToken) {
-      return res.status(401).send('Unauthorized');
-    }
-
-    const shopifyOrderId = req.params.orderId;
-    const pOrder = await resyncSingleShopifyOrderFromPrintoteca(shopifyOrderId);
-
-    if (!pOrder) {
-      return res.status(404).json({
-        ok: false,
-        message:
-          'No Printoteca order found for this Shopify order (check pod.printoteca_order_id metafield)',
-      });
-    }
-
-    return res.json({
-      ok: true,
-      printotecaOrderId: pOrder.id,
-      status: pOrder.status,
-    });
-  } catch (err) {
-    console.error('Manual resync error', err);
-    return res.status(500).json({ ok: false, error: err.message });
+    res.status(500).send('Error');
   }
 });
 
