@@ -160,36 +160,3 @@ async function sendOrderToPrintotecaWithRetry(order, attempt = 1) {
       );
     } catch (err) {
       const msg = err.response?.data || err.message || '';
-      const msgStr = typeof msg === 'string' ? msg : JSON.stringify(msg);
-
-      console.error(
-        `Printoteca: error sending order ${order.id} on attempt ${attempt}:`,
-        msgStr
-      );
-
-      const isDesignUrlError = msgStr.includes('Design url is not valid');
-
-      if (isDesignUrlError && attempt < maxAttempts) {
-        console.log(
-          `Printoteca: design probably not ready yet, will retry in ${waitSec} seconds (attempt ${
-            attempt + 1
-          }/${maxAttempts})`
-        );
-
-        setTimeout(() => {
-          sendOrderToPrintotecaWithRetry(order, attempt + 1).catch((e) =>
-            console.error('Printoteca retry error', e)
-          );
-        }, delayMs);
-      } else {
-        console.log('Printoteca: not retrying this order any further.');
-      }
-    }
-  };
-
-  if (attempt === 1) {
-    console.log(
-      `Printoteca: waiting ${waitSec} seconds before FIRST send for Shopify order ${order.id}...`
-    );
-    setTimeout(() => {
-      doSend().catch((e) =>
