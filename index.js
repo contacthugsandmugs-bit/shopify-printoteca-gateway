@@ -160,3 +160,192 @@ async function sendOrderToPrintotecaWithRetry(order, attempt = 1) {
       );
     } catch (err) {
       const msg = err.response?.data || err.message || '';
+      const msgStr = typeof msg === 'string' ? msg : JSON.stringify(msg);
+
+      console.error(
+        `Printoteca: error sending order ${order.id} on attempt ${attempt}:`,
+        msgStr
+      );
+
+      const isDesignUrlError = msgStr.includes('Design url is not valid');
+
+      if (isDesignUrlError && attempt < maxAttempts) {
+        console.log(
+          `Printoteca: design probably not ready yet, will retry in ${waitSec} seconds (attempt ${
+            attempt + 1
+          }/${maxAttempts})`
+        );
+
+        setTimeout(() => {
+          sendOrderToPrintotecaWithRetry(order, attempt + 1).catch((e) =>
+            console.error('Printoteca retry error', e)
+          );
+        }, delayMs);
+      } else {
+        console.log('Printoteca: not retrying this order any further.');
+      }
+    }
+  };
+
+  if (attempt === 1) {
+    console.log(
+      `Printoteca: waiting ${waitSec} seconds before FIRST send for Shopify order ${order.id}...`
+    );
+    setTimeout(() => {
+      doSend().catch((e) => console.error('Printoteca first-send error', e));
+    }, delayMs);
+  } else {
+    await doSend();
+  }
+}
+
+// ---------------------------
+// Cancellations → Printoteca
+// ---------------------------
+
+async function handleShopifyCancellation(order) {
+  const externalId = `shopify:${order.id}`;
+  const daysBack = Number(process.env.PRINTOTECA_CANCEL_WINDOW_DAYS || 30);
+
+  console.log(
+    `Cancellation: trying to find Printoteca order with external_id=${externalId} (last ${daysBack} days)`
+  );
+
+  const po = await findPrintotecaOrderByExternalId(externalId, daysBack);
+
+  if (!po) {
+    console.log('Cancellation: no Printoteca order found for', externalId);
+    return;
+  }
+
+  console.log(
+    `Cancellation: found Printoteca order ${po.id} for external_id=${externalId}, deleting...`
+  );
+
+  const resp = await deletePrintotecaOrderById(po.id);
+  console.log('Cancellation: Printoteca delete response:', JSON.stringify(resp));
+}
+
+// ---------------------------
+// Cron job endpoint: tracking
+// ---------------------------
+
+app.get('/jobs/printoteca/pull-tracking', async (req, res) => {
+  try {
+    if (!checkJobToken(req, res)) return;
+
+    const result = await pollPrintotecaTrackingOnce();
+    res.json(result);
+  } catch (err) {
+    console.error('Tracking job endpoint error', err);
+    res.status(500).send('Error');
+  }
+});
+
+// ---------------------------
+// Admin helper endpoints
+// ---------------------------
+
+app.get('/admin/printoteca/orders', async (req, res) => {
+  try {
+    if (!checkJobToken(req, res)) return;
+
+    const {
+      ids,
+      limit,
+      page,
+      since_id,
+      created_at_min,
+      created_at_max,
+      status
+    } = req.query;
+
+    const orders = await listPrintotecaOrders({
+      ids,
+      limit,
+      page,
+      since_id,
+      created_at_min,
+      created_at_max,
+      status
+    });
+
+    res.json({ count: orders.length, orders });
+  } catch (err) {
+    console.error('/admin/printoteca/orders error', err);
+    res.status(500).send('Error');
+  }
+});
+
+app.get('/admin/printoteca/orders/:id', async (req, res) => {
+  try {
+    if (!checkJobToken(req, res)) return;
+
+    const id = req.params.id;
+    const order = await getPrintotecaOrderById(id);
+
+    res.json(order);
+  } catch (err) {
+    console.error('/admin/printoteca/orders/:id error', err);
+    res.status(500).send('Error');
+  }
+});
+
+app.get('/admin/printoteca/orders-count', async (req, res) => {
+  try {
+    if (!checkJobToken(req, res)) return;
+
+    const { since_id, created_at_min, created_at_max, status } = req.query;
+
+    const data = await countPrintotecaOrders({
+      since_id,
+      created_at_min,
+      created_at_max,
+      status
+    });
+
+    res.json(data);
+  } catch (err) {
+    console.error('/admin/printoteca/orders-count error', err);
+    res.status(500).send('Error');
+  }
+});
+
+app.delete('/admin/printoteca/orders/:id', async (req, res) => {
+  try {
+    if (!checkJobToken(req, res)) return;
+
+    const id = req.params.id;
+    const data = await deletePrintotecaOrderById(id);
+
+    res.json(data);
+  } catch (err) {
+    console.error('DELETE /admin/printoteca/orders/:id error', err);
+    res.status(500).send('Error');
+  }
+});
+
+// ---------------------------
+// Job token check
+// ---------------------------
+
+function checkJobToken(req, res) {
+  const jobToken = process.env.JOB_SECRET;
+  if (!jobToken) return true; // no protection configured
+
+  if (req.query.token !== jobToken) {
+    res.status(401).send('Unauthorized');
+    return false;
+  }
+
+  return true;
+}
+
+// ---------------------------
+// Start server
+// ---------------------------
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Gateway listening on port ${port}`);
+});
