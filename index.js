@@ -1,8 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
-const crypto = require('crypto');
-const { sendOrderToPrintoteca, cancelPrintotecaOrder } = require('./printoteca');
+const { sendOrderToPrintoteca, cancelPrintotecaOrder } = require('./printoteca');  // Corrected import
 const { pollPrintotecaTrackingOnce } = require('./tracking');
 
 const app = express();
@@ -33,7 +32,7 @@ app.post('/webhooks/shopify/orders-paid', async (req, res) => {
     const order = JSON.parse(rawBody.toString('utf8'));
     console.log(`Received paid order ${order.id} / ${order.name}`);
 
-    // Start Printoteca flow in the background (1 minute delay before sending order)
+    // Start Printoteca flow in the background (1-minute delay before sending order)
     sendOrderToPrintotecaWithRetry(order);
 
     res.status(200).send('OK');
@@ -63,8 +62,8 @@ app.post('/webhooks/shopify/orders-cancelled', async (req, res) => {
     const order = JSON.parse(rawBody.toString('utf8'));
     console.log(`Received cancellation for order ${order.id} / ${order.name}`);
 
-    // Handle order cancellation for Printoteca
-    cancelPrintotecaOrder(order);
+    // Call cancelPrintotecaOrder from the imported module
+    await cancelPrintotecaOrder(order);
 
     res.status(200).send('OK');
   } catch (err) {
@@ -92,7 +91,7 @@ function verifyShopifyWebhook(rawBody, hmacHeader) {
 // Retry logic for sending orders to Printoteca
 async function sendOrderToPrintotecaWithRetry(order, attempt = 1) {
   const maxAttempts = Number(process.env.PRINTOTECA_MAX_ATTEMPTS || 5);
-  const delayMs = 60000; // 1 minute delay
+  const delayMs = 60000; // 1-minute delay
   const waitSec = Math.round(delayMs / 1000);
 
   const doSend = async () => {
@@ -125,37 +124,6 @@ async function sendOrderToPrintotecaWithRetry(order, attempt = 1) {
     await doSend();
   }
 }
-
-// Cancel Printoteca order
-async function cancelPrintotecaOrder(shopifyOrder) {
-  const externalId = `shopify:${shopifyOrder.id}`;
-
-  const printotecaOrder = await findPrintotecaOrderByExternalId(externalId);
-
-  if (!printotecaOrder) {
-    console.log(`No Printoteca order found for ${externalId}`);
-    return;
-  }
-
-  const resp = await deletePrintotecaOrderById(printotecaOrder.id);
-  console.log(`Cancelled Printoteca order ${printotecaOrder.id} for external_id=${externalId}`, resp);
-}
-
-// Cron job for pulling tracking information
-app.get('/jobs/pull-printoteca-tracking', async (req, res) => {
-  try {
-    const jobToken = process.env.JOB_SECRET;
-    if (jobToken && req.query.token !== jobToken) {
-      return res.status(401).send('Unauthorized');
-    }
-
-    const result = await pollPrintotecaTrackingOnce();
-    res.json(result);
-  } catch (err) {
-    console.error('Tracking job error', err);
-    res.status(500).send('Error');
-  }
-});
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
