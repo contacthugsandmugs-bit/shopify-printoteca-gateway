@@ -96,6 +96,7 @@ async function sendOrderToPrintoteca(shopifyOrder) {
   return response.data;
 }
 
+// Export functions
 module.exports = {
   sendOrderToPrintoteca,
   cancelPrintotecaOrder,
