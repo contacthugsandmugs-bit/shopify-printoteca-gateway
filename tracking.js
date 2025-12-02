@@ -3,20 +3,24 @@ const {
   listPrintotecaOrders,
   getPrintotecaOrderForShopifyOrder,
 } = require('./printoteca');
+
 const {
   replacePodStatusTag,
   setPrintotecaShippingCostMetafield,
 } = require('./shopify');
 
-const TRACKING_WINDOW_DAYS = Number(process.env.PRINTOTECA_TRACKING_WINDOW_DAYS || 14);
+const TRACKING_WINDOW_DAYS = Number(
+  process.env.PRINTOTECA_TRACKING_WINDOW_DAYS || 14,
+);
 
-// ---- D. status mapping (+ shipped / delivered) ----
-
+// -----------------------------------------------------
+// D. Status mapping (+ shipped / delivered / refunded)
+// -----------------------------------------------------
 function mapPrintotecaStatusToPodTag(printotecaOrder) {
   const status = (printotecaOrder.status || '').toLowerCase();
   const shipping = printotecaOrder.shipping || {};
   const hasTracking = Boolean(shipping.trackingNumber);
-  const shippedAt = shipping.shiped_at || shipping.shipped_at; // some typos in older APIs
+  const shippedAt = shipping.shiped_at || shipping.shipped_at; // some APIs typo
 
   // Extra statuses
   if (status === 'refunded') return 'POD: refunded';
@@ -28,10 +32,12 @@ function mapPrintotecaStatusToPodTag(printotecaOrder) {
       const shippedDate = new Date(shippedAt);
       const daysSince =
         (Date.now() - shippedDate.getTime()) / (1000 * 60 * 60 * 24);
+
       if (daysSince >= TRACKING_WINDOW_DAYS) {
         return 'POD: delivered';
       }
     }
+
     return 'POD: shipped';
   }
 
@@ -46,12 +52,16 @@ function mapPrintotecaStatusToPodTag(printotecaOrder) {
   return null;
 }
 
-// Apply tag + shipping cost to one Shopify order
+// -----------------------------------------------------
+// Apply tag + shipping cost metafield to one Shopify order
+// -----------------------------------------------------
 async function applyPrintotecaOrderToShopify(printotecaOrder) {
   const externalId = printotecaOrder.external_id || printotecaOrder.externalId;
+
   if (!externalId || !externalId.startsWith('shopify:')) {
     return;
   }
+
   const shopifyOrderId = externalId.replace('shopify:', '');
 
   const tag = mapPrintotecaStatusToPodTag(printotecaOrder);
@@ -59,7 +69,7 @@ async function applyPrintotecaOrderToShopify(printotecaOrder) {
     await replacePodStatusTag(shopifyOrderId, tag);
   }
 
-  // ---- G. shipping cost metafield ----
+  // G. shipping cost metafield (optional but handy for margins)
   const summary = printotecaOrder.summary || {};
   if (summary.shippingPrice != null) {
     await setPrintotecaShippingCostMetafield(
@@ -69,23 +79,24 @@ async function applyPrintotecaOrderToShopify(printotecaOrder) {
     );
   }
 
-  // You can also call your existing "ensure fulfillment & tracking" function here,
-  // using printotecaOrder.shipping.trackingNumber / shipped_at if you already have it.
+  // If you later add a function that creates Shopify fulfillments
+  // from trackingNumber / shiped_at, call it here as well.
 }
 
-// ---- Automatic cron sync (same idea as you already have) ----
-// This is a reference implementation; if you already have /jobs/pull-printoteca-tracking,
-// just call applyPrintotecaOrderToShopify() instead of your old tag logic.
-
+// -----------------------------------------------------
+// Automatic cron sync (used by /jobs/pull-printoteca-tracking)
+// -----------------------------------------------------
 async function syncRecentPrintotecaOrders() {
-  const createdAtMin = new Date(Date.now() - TRACKING_WINDOW_DAYS * 86400000)
-    .toISOString();
+  const createdAtMin = new Date(
+    Date.now() - TRACKING_WINDOW_DAYS * 86400000,
+  ).toISOString();
 
   let page = 1;
   const limit = 50;
 
-  // Inkthreadable API does basic pagination by page + limit
-  // Adjust if you're already using another strategy
+  let synced = 0;
+  let errors = 0;
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const data = await listPrintotecaOrders({
@@ -95,17 +106,19 @@ async function syncRecentPrintotecaOrders() {
     });
 
     const orders = Array.isArray(data.orders) ? data.orders : data;
+
     if (!orders || !orders.length) break;
 
-    // In parallel but with simple throttling if you want
     for (const pOrder of orders) {
       try {
         await applyPrintotecaOrderToShopify(pOrder);
+        synced += 1;
       } catch (err) {
+        errors += 1;
         console.error(
           '[tracking] Failed to sync Printoteca order',
           pOrder.id,
-          err.message,
+          err && err.message,
         );
       }
     }
@@ -113,10 +126,18 @@ async function syncRecentPrintotecaOrders() {
     if (orders.length < limit) break; // no more pages
     page += 1;
   }
+
+  return { synced, errors };
 }
 
-// ---- C. Manual “resync this order” helper ----
+// Keep a helper with the old name for index.js / cron
+async function pollPrintotecaTrackingOnce() {
+  return syncRecentPrintotecaOrders();
+}
 
+// -----------------------------------------------------
+// C. Manual “resync this order” helper
+// -----------------------------------------------------
 async function resyncSingleShopifyOrderFromPrintoteca(shopifyOrderId) {
   const pOrder = await getPrintotecaOrderForShopifyOrder(shopifyOrderId);
   if (!pOrder) return false;
@@ -129,5 +150,6 @@ module.exports = {
   mapPrintotecaStatusToPodTag,
   applyPrintotecaOrderToShopify,
   syncRecentPrintotecaOrders,
+  pollPrintotecaTrackingOnce,
   resyncSingleShopifyOrderFromPrintoteca,
 };
